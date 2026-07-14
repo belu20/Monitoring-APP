@@ -1,6 +1,5 @@
 from flask import Flask, render_template_string
 import os
-import re
 from datetime import datetime
 import paramiko
 from dotenv import load_dotenv
@@ -19,6 +18,8 @@ BASE_DIR = os.getenv("BASE_DIR", "/home/log")
 
 def get_remote_directory_status():
     today_str = datetime.now().strftime("%Y-%m-%d")
+    target_content = f"content-{today_str}.csv"
+    target_index = f"index-{today_str}.csv"
     
     report = []
     
@@ -31,80 +32,66 @@ def get_remote_directory_status():
     
     try:
         ssh.connect(hostname=SSH_HOST, port=SSH_PORT, username=SSH_USER, password=SSH_PASSWORD, timeout=10)
+        sftp = ssh.open_sftp()
         
-        # Menggunakan query SSH tunggal untuk performa optimal (mengurangi latency roundtrip SFTP)
-        cmd = f"""
-        for d in {BASE_DIR}/*; do
-            if [ -d "$d" ]; then
-                folder_name=$(basename "$d")
-                has_content=0
-                has_index=0
-                [ -f "$d/content-{today_str}.csv" ] && has_content=1
-                [ -f "$d/index-{today_str}.csv" ] && has_index=1
+        try:
+            items = sftp.listdir(BASE_DIR)
+        except IOError:
+            return {"error": f"Path remote tidak ditemukan: {BASE_DIR}", "data": []}
+            
+        # Filter item yang merupakan direktori
+        directories = []
+        import stat
+        for item in items:
+            item_path = f"{BASE_DIR}/{item}"
+            try:
+                mode = sftp.stat(item_path).st_mode
+                if stat.S_ISDIR(mode):
+                    directories.append(item)
+            except IOError:
+                continue
                 
-                latest_file=$(find "$d" -maxdepth 1 -type f \\( -name "content-*.csv" -o -name "index-*.csv" \\) | sort | tail -n 1)
-                if [ -n "$latest_file" ]; then
-                    latest_name=$(basename "$latest_file")
-                else
-                    latest_name="-"
-                fi
-                echo "$folder_name:$has_content:$has_index:$latest_name"
-            fi
-        done
-        """
-        
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        output = stdout.read().decode('utf-8')
-        err_output = stderr.read().decode('utf-8')
-        
-        if err_output and not output:
-            return {"error": f"Error remote server: {err_output}", "data": []}
+        directories.sort()
+
+        # Cek ketersediaan file index & content hari ini di setiap folder
+        for folder in directories:
+            folder_path = f"{BASE_DIR}/{folder}"
+            content_path = f"{folder_path}/{target_content}"
+            index_path = f"{folder_path}/{target_index}"
             
-        lines = output.strip().split("\n")
-        for line in lines:
-            if not line:
-                continue
-            parts = line.split(":", 3)
-            if len(parts) < 4:
-                continue
-            folder, has_content, has_index, latest_file = parts
-            
-            content_updated = (has_content == "1")
-            index_updated = (has_index == "1")
+            content_updated = True
+            try:
+                sftp.stat(content_path)
+            except IOError:
+                content_updated = False
+                
+            index_updated = True
+            try:
+                sftp.stat(index_path)
+            except IOError:
+                index_updated = False
             
             if content_updated and index_updated:
                 status = "OK"
-                priority = 1
+                priority = 1  # Paling atas
             elif content_updated or index_updated:
                 status = "PARTIAL"
-                priority = 2
+                priority = 2  # Tengah
             else:
                 status = "CRITICAL"
-                priority = 3
+                priority = 3  # Paling bawah
                 
-            # Ekstrak tanggal terakhir data masuk dari nama file
-            last_date = "-"
-            if latest_file and latest_file != "-":
-                match = re.search(r"(\d{4}-\d{2}-\d{2})", latest_file)
-                if match:
-                    date_str = match.group(1)
-                    try:
-                        dt = datetime.strptime(date_str, "%Y-%m-%d")
-                        last_date = dt.strftime("%d %b %Y")
-                    except Exception:
-                        last_date = date_str
-                else:
-                    last_date = latest_file
-                    
             report.append({
                 "folder_name": folder,
                 "content_updated": content_updated,
                 "index_updated": index_updated,
                 "status": status,
-                "priority": priority,
-                "last_date": last_date
+                "priority": priority  # Disimpan untuk kebutuhan sorting
             })
             
+        sftp.close()
+        
+        # --- PROSES SORTING DI SINI ---
         # Mengurutkan berdasarkan 'priority' (1 ke 3), lalu berdasarkan nama folder (A-Z)
         report.sort(key=lambda x: (x["priority"], x["folder_name"]))
         
@@ -150,7 +137,6 @@ HTML_TEMPLATE = """
                         <th class="py-4 px-6 font-semibold">Nama Direktori</th>
                         <th class="py-4 px-6 font-semibold text-center">Content CSV</th>
                         <th class="py-4 px-6 font-semibold text-center">Index CSV</th>
-                        <th class="py-4 px-6 font-semibold text-center">Tanggal Terakhir Masuk</th>
                         <th class="py-4 px-6 font-semibold text-center">Status</th>
                     </tr>
                 </thead>
@@ -170,13 +156,6 @@ HTML_TEMPLATE = """
                                 <span class="bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded-full font-medium border border-green-800/60">Updated</span>
                             {% else %}
                                 <span class="bg-red-900/40 text-red-400 text-xs px-2.5 py-1 rounded-full font-medium border border-red-800/60">Missing</span>
-                            {% endif %}
-                        </td>
-                        <td class="py-3.5 px-6 text-center">
-                            {% if item.last_date != '-' %}
-                                <span class="text-gray-300 font-mono text-sm">{{ item.last_date }}</span>
-                            {% else %}
-                                <span class="text-gray-600 font-mono text-sm">-</span>
                             {% endif %}
                         </td>
                         <td class="py-3.5 px-6 text-center">
