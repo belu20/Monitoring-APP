@@ -45,10 +45,12 @@ def get_remote_directory_status():
                 latest_file=$(find "$d" -maxdepth 1 -type f \\( -name "content-*.csv" -o -name "index-*.csv" \\) | sort | tail -n 1)
                 if [ -n "$latest_file" ]; then
                     latest_name=$(basename "$latest_file")
+                    mtime=$(stat -c "%y" "$latest_file" | cut -d'.' -f1)
                 else
                     latest_name="-"
+                    mtime="-"
                 fi
-                echo "$folder_name:$has_content:$has_index:$latest_name"
+                echo "$folder_name|$has_content|$has_index|$latest_name|$mtime"
             fi
         done
         """
@@ -64,10 +66,10 @@ def get_remote_directory_status():
         for line in lines:
             if not line:
                 continue
-            parts = line.split(":", 3)
-            if len(parts) < 4:
+            parts = line.split("|")
+            if len(parts) < 5:
                 continue
-            folder, has_content, has_index, latest_file = parts
+            folder, has_content, has_index, latest_file, mtime = parts
             
             content_updated = (has_content == "1")
             index_updated = (has_index == "1")
@@ -82,19 +84,14 @@ def get_remote_directory_status():
                 status = "CRITICAL"
                 priority = 3
                 
-            # Ekstrak tanggal terakhir data masuk dari nama file
+            # Ekstrak tanggal dan jam terakhir data masuk dari mtime file terbaru
             last_date = "-"
-            if latest_file and latest_file != "-":
-                match = re.search(r"(\d{4}-\d{2}-\d{2})", latest_file)
-                if match:
-                    date_str = match.group(1)
-                    try:
-                        dt = datetime.strptime(date_str, "%Y-%m-%d")
-                        last_date = dt.strftime("%d %b %Y")
-                    except Exception:
-                        last_date = date_str
-                else:
-                    last_date = latest_file
+            if mtime and mtime != "-":
+                try:
+                    dt = datetime.strptime(mtime, "%Y-%m-%d %H:%M:%S")
+                    last_date = dt.strftime("%d %b %Y %H:%M:%S")
+                except Exception:
+                    last_date = mtime
                     
             report.append({
                 "folder_name": folder,
@@ -150,7 +147,7 @@ HTML_TEMPLATE = """
                         <th class="py-4 px-6 font-semibold">Nama Direktori</th>
                         <th class="py-4 px-6 font-semibold text-center">Content CSV</th>
                         <th class="py-4 px-6 font-semibold text-center">Index CSV</th>
-                        <th class="py-4 px-6 font-semibold text-center">Tanggal Terakhir Masuk</th>
+                        <th class="py-4 px-6 font-semibold text-center">Waktu Terakhir Masuk</th>
                         <th class="py-4 px-6 font-semibold text-center">Status</th>
                     </tr>
                 </thead>
