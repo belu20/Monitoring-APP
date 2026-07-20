@@ -42,15 +42,20 @@ def get_remote_directory_status():
                 [ -f "$d/content-{today_str}.csv" ] && has_content=1
                 [ -f "$d/index-{today_str}.csv" ] && has_index=1
                 
-                latest_file=$(find "$d" -maxdepth 1 -type f \\( -name "content-*.csv" -o -name "index-*.csv" \\) | sort | tail -n 1)
-                if [ -n "$latest_file" ]; then
-                    latest_name=$(basename "$latest_file")
-                    mtime=$(stat -c "%y" "$latest_file" | cut -d'.' -f1)
+                latest_content=$(find "$d" -maxdepth 1 -type f -name "content-*.csv" | sort | tail -n 1)
+                if [ -n "$latest_content" ]; then
+                    content_mtime=$(stat -c "%y" "$latest_content" | cut -d'.' -f1)
                 else
-                    latest_name="-"
-                    mtime="-"
+                    content_mtime="-"
                 fi
-                echo "$folder_name|$has_content|$has_index|$latest_name|$mtime"
+                
+                latest_index=$(find "$d" -maxdepth 1 -type f -name "index-*.csv" | sort | tail -n 1)
+                if [ -n "$latest_index" ]; then
+                    index_mtime=$(stat -c "%y" "$latest_index" | cut -d'.' -f1)
+                else
+                    index_mtime="-"
+                fi
+                echo "$folder_name|$has_content|$has_index|$content_mtime|$index_mtime"
             fi
         done
         """
@@ -69,7 +74,7 @@ def get_remote_directory_status():
             parts = line.split("|")
             if len(parts) < 5:
                 continue
-            folder, has_content, has_index, latest_file, mtime = parts
+            folder, has_content, has_index, content_mtime, index_mtime = parts
             
             content_updated = (has_content == "1")
             index_updated = (has_index == "1")
@@ -84,14 +89,23 @@ def get_remote_directory_status():
                 status = "CRITICAL"
                 priority = 3
                 
-            # Ekstrak tanggal dan jam terakhir data masuk dari mtime file terbaru
-            last_date = "-"
-            if mtime and mtime != "-":
+            # Ekstrak tanggal dan jam terakhir data masuk untuk content
+            content_last_date = "-"
+            if content_mtime and content_mtime != "-":
                 try:
-                    dt = datetime.strptime(mtime, "%Y-%m-%d %H:%M:%S")
-                    last_date = dt.strftime("%d %b %Y %H:%M:%S")
+                    dt = datetime.strptime(content_mtime, "%Y-%m-%d %H:%M:%S")
+                    content_last_date = dt.strftime("%d %b %Y %H:%M:%S")
                 except Exception:
-                    last_date = mtime
+                    content_last_date = content_mtime
+                    
+            # Ekstrak tanggal dan jam terakhir data masuk untuk index
+            index_last_date = "-"
+            if index_mtime and index_mtime != "-":
+                try:
+                    dt = datetime.strptime(index_mtime, "%Y-%m-%d %H:%M:%S")
+                    index_last_date = dt.strftime("%d %b %Y %H:%M:%S")
+                except Exception:
+                    index_last_date = index_mtime
                     
             report.append({
                 "folder_name": folder,
@@ -99,7 +113,8 @@ def get_remote_directory_status():
                 "index_updated": index_updated,
                 "status": status,
                 "priority": priority,
-                "last_date": last_date
+                "content_last_date": content_last_date,
+                "index_last_date": index_last_date
             })
             
         # Mengurutkan berdasarkan 'priority' (1 ke 3), lalu berdasarkan nama folder (A-Z)
@@ -147,7 +162,6 @@ HTML_TEMPLATE = """
                         <th class="py-4 px-6 font-semibold">Nama Direktori</th>
                         <th class="py-4 px-6 font-semibold text-center">Content CSV</th>
                         <th class="py-4 px-6 font-semibold text-center">Index CSV</th>
-                        <th class="py-4 px-6 font-semibold text-center">Waktu Terakhir Masuk</th>
                         <th class="py-4 px-6 font-semibold text-center">Status</th>
                     </tr>
                 </thead>
@@ -156,25 +170,36 @@ HTML_TEMPLATE = """
                     <tr class="hover:bg-gray-700/50 transition-colors">
                         <td class="py-3.5 px-6 font-mono text-sm text-gray-200">{{ item.folder_name }}</td>
                         <td class="py-3.5 px-6 text-center">
-                            {% if item.content_updated %}
-                                <span class="bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded-full font-medium border border-green-800/60">Updated</span>
-                            {% else %}
-                                <span class="bg-red-900/40 text-red-400 text-xs px-2.5 py-1 rounded-full font-medium border border-red-800/60">Missing</span>
-                            {% endif %}
+                            <div>
+                                {% if item.content_updated %}
+                                    <span class="bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded-full font-medium border border-green-800/60">Updated</span>
+                                {% else %}
+                                    <span class="bg-red-900/40 text-red-400 text-xs px-2.5 py-1 rounded-full font-medium border border-red-800/60">Missing</span>
+                                {% endif %}
+                            </div>
+                            <div class="text-[11px] text-gray-400 font-mono mt-1.5">
+                                {% if item.content_last_date != '-' %}
+                                    {{ item.content_last_date }}
+                                {% else %}
+                                    <span class="text-gray-600">-</span>
+                                {% endif %}
+                            </div>
                         </td>
                         <td class="py-3.5 px-6 text-center">
-                            {% if item.index_updated %}
-                                <span class="bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded-full font-medium border border-green-800/60">Updated</span>
-                            {% else %}
-                                <span class="bg-red-900/40 text-red-400 text-xs px-2.5 py-1 rounded-full font-medium border border-red-800/60">Missing</span>
-                            {% endif %}
-                        </td>
-                        <td class="py-3.5 px-6 text-center">
-                            {% if item.last_date != '-' %}
-                                <span class="text-gray-300 font-mono text-sm">{{ item.last_date }}</span>
-                            {% else %}
-                                <span class="text-gray-600 font-mono text-sm">-</span>
-                            {% endif %}
+                            <div>
+                                {% if item.index_updated %}
+                                    <span class="bg-green-900/40 text-green-400 text-xs px-2.5 py-1 rounded-full font-medium border border-green-800/60">Updated</span>
+                                {% else %}
+                                    <span class="bg-red-900/40 text-red-400 text-xs px-2.5 py-1 rounded-full font-medium border border-red-800/60">Missing</span>
+                                {% endif %}
+                            </div>
+                            <div class="text-[11px] text-gray-400 font-mono mt-1.5">
+                                {% if item.index_last_date != '-' %}
+                                    {{ item.index_last_date }}
+                                {% else %}
+                                    <span class="text-gray-600">-</span>
+                                {% endif %}
+                            </div>
                         </td>
                         <td class="py-3.5 px-6 text-center">
                             {% if item.status == 'OK' %}
